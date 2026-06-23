@@ -94,3 +94,21 @@ jobs:
             ```json
             ${{ steps.create_vm.outputs.log_data }}
             ```
+            
+      - name: 抢到OCI实例发送邮件通知
+        # 关键判断：只有创建成功才运行本步骤，failure直接跳过
+        # steps.create_vm.outcome == 'success'
+        if: always() 
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_SENDER }}
+          password: ${{ secrets.MAIL_PWD }}
+          to: ${{ secrets.MAIL_RECEIVER }}
+          subject: 【OCI成功通知】已抢到免费A1.Flex ARM主机
+          body: |
+            GitHub定时任务成功创建Oracle Cloud实例！            
+            完整OCI返回日志：
+            ${{ steps.create_vm.outputs.log_data }}
