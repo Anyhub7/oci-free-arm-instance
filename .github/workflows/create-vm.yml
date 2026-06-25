@@ -140,8 +140,8 @@ jobs:
           password: ${{ secrets.MAIL_PWD }}
           from: ${{ secrets.MAIL_SENDER }}   # 新增，通常和 username 相同
           to: ${{ secrets.MAIL_RECEIVER }}
-          subject: 【OCI成功通知】已抢到免费A1.Flex ARM主机
+          subject: 【OCI通知】A1.Flex ARM主机 ${{ steps.create_vm.outcome }}
           body: |
-            GitHub定时任务成功创建Oracle Cloud实例！            
+            GitHub定时创建Oracle Cloud实例 - ${{ steps.create_vm.outcome }}！            
             完整OCI返回日志：
             ${{ steps.create_vm.outputs.log_data }}
