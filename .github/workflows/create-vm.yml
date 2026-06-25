@@ -129,8 +129,8 @@ jobs:
             
       - name: 抢到OCI实例发送邮件通知
         # 关键判断：只有创建成功才运行本步骤，failure直接跳过
-        # steps.create_vm.outcome == 'success'
-        if: always() 
+        if: steps.create_vm.outcome == 'success'
+        # if: always() 
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
@@ -140,7 +140,7 @@ jobs:
           password: ${{ secrets.MAIL_PWD }}
           from: ${{ secrets.MAIL_SENDER }}   # 新增，通常和 username 相同
           to: ${{ secrets.MAIL_RECEIVER }}
-          subject: 【OCI通知】A1.Flex ARM主机 ${{ steps.create_vm.outcome }}
+          subject: 【${{ steps.create_vm.outcome }}】A1.Flex ARM主机 - OCI通知
           body: |
             GitHub定时创建Oracle Cloud实例 - ${{ steps.create_vm.outcome }}！            
             完整OCI返回日志：
