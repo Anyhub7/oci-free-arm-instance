@@ -83,6 +83,7 @@ jobs:
         uses: sarisia/actions-status-discord@v1.15.4
         with:
           webhook: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          ack_no_webhook: true   # 如果 webhook 为空则不报错，只跳过发送
           title: "OCI VM Status: ${{ steps.create_vm.outcome }}"
           status: ${{ steps.create_vm.outcome }}
           color: ${{ steps.create_vm.outcome == 'success' && '0x28a745' || '0xdc3545' }}
@@ -106,6 +107,7 @@ jobs:
           secure: true
           username: ${{ secrets.MAIL_SENDER }}
           password: ${{ secrets.MAIL_PWD }}
+          from: ${{ secrets.MAIL_SENDER }}   # 新增，通常和 username 相同
           to: ${{ secrets.MAIL_RECEIVER }}
           subject: 【OCI成功通知】已抢到免费A1.Flex ARM主机
           body: |
