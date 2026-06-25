@@ -37,11 +37,29 @@ jobs:
         run: |
           set -o pipefail
 
+          # 新增调试打印
+          echo "=====调试变量输出开始====="
+          echo "COMPARTMENT_ID 长度：${#COMPARTMENT_ID} 内容片段：${COMPARTMENT_ID:0:30}"
+          echo "SUBNET_ID 长度：${#SUBNET_ID} 内容片段：${SUBNET_ID:0:30}"
+          echo "OCI_CLI_USER 长度：${#OCI_CLI_USER} 内容片段：${OCI_CLI_USER:0:30}"
+          echo "OCI_CLI_TENANCY 长度：${#OCI_CLI_TENANCY} 内容片段：${OCI_CLI_TENANCY:0:30}"
+          echo "OCI_CLI_FINGERPRINT 长度：${#OCI_CLI_FINGERPRINT}"
+          echo "OCI_CLI_KEY 私钥总长度：${#{ secrets.OCI_CLI_KEY }}"
+          echo "=====调试变量输出结束====="
+
           pip install oci-cli
 
           mkdir -p ~/.oci
           echo "${{ secrets.OCI_CLI_KEY }}" > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/oci_api_key.pem
+
+          # 新增校验
+          echo "=====私钥文件校验====="
+          ls -l ~/.oci/oci_api_key.pem
+          head -5 ~/.oci/oci_api_key.pem
+          tail -3 ~/.oci/oci_api_key.pem
+          echo "文件总字节：$(wc -c ~/.oci/oci_api_key.pem)"
+          echo "=====私钥文件校验结束====="
 
           echo "[DEFAULT]" > ~/.oci/config
           echo "user=${{ secrets.OCI_CLI_USER }}" >> ~/.oci/config
@@ -50,6 +68,19 @@ jobs:
           echo "key_file=~/.oci/oci_api_key.pem" >> ~/.oci/config
           echo "region=${{ env.OCI_CLI_REGION }}" >> ~/.oci/config
           echo "${{ secrets.SSH_PUBLIC_KEY }}" > /home/runner/my_ssh_key.pub
+
+          chmod 600 ~/.oci/config
+
+          # 新增校验
+          echo "=====config文件校验====="
+          ls -l ~/.oci/config
+          cat ~/.oci/config
+          echo "=====config文件校验结束====="
+
+          # 新增鉴权测试
+          echo "=====OCI鉴权测试====="
+          oci iam user get --user-id $OCI_CLI_USER 2>&1 || true
+          echo "=====鉴权测试结束====="
 
           # Run the command, capture ALL output, and use '|| true' to prevent the script from exiting early.
           OCI_OUTPUT=$(oci compute instance launch \
