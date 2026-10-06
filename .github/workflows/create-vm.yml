@@ -10,6 +10,11 @@ on:
       timezone: Asia/Shanghai
   # Allows you to manually run this workflow from the Actions tab
   workflow_dispatch:
+  
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+  
 env:
   COMPARTMENT_ID: "ocid1.tenancy.oc1..aaaaaaaapigjvcqqquqdwctgwtoselxortcgoip2fiouzsjmvpdvylwfcica"  # root compartment = tenancy OCID（大阪 home region）
   IMAGE_ID: "ocid1.image.oc1.ap-osaka-1.aaaaaaaa32nht45vu6d4xf3dlqydt2k2zghlds3fzdm5oidnonjgrhuon6fa"              # Canonical Ubuntu 24.04 Minimal aarch64，大阪区专属 OCID
