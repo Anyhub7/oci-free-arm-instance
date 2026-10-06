@@ -1,16 +1,19 @@
 name: Try to Create OCI VM
-# It will run every 5 minutes.
+# 每 5 分钟抢一次大阪区 A1.Flex（Always Free 额度）。
+# 修复记录（2026-10-06）：原脚本 region 全写 ap-singapore-1，但账号 home region
+# 是 ap-osaka-1，免费机只能建在 home region；启动卷 200GB 会超 200GB 免费总额，
+# 改为 50GB；加了幂等检查（已有 A1 就跳过）；通知只走邮件（Discord 已移除）。
 on:
   schedule:
     - cron: "*/5 * * * *"
   # Allows you to manually run this workflow from the Actions tab
   workflow_dispatch:
 env:
-  COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
-  IMAGE_ID: "ocid1.image.oc1.ap-singapore-1.aaaaaaaa5a3xwkk5vaichk47fms2uzvsqeriats2uorf6kwgq3l3nwrbhipa"
-  SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
-  AD_NAME: "KClJ:AP-SINGAPORE-1-AD-1"
-  OCI_CLI_REGION: "ap-singapore-1"
+  COMPARTMENT_ID: "ocid1.tenancy.oc1..aaaaaaaapigjvcqqquqdwctgwtoselxortcgoip2fiouzsjmvpdvylwfcica"  # root compartment = tenancy OCID（大阪 home region）
+  IMAGE_ID: "ocid1.image.oc1.ap-osaka-1.aaaaaaaa32nht45vu6d4xf3dlqydt2k2zghlds3fzdm5oidnonjgrhuon6fa"              # Canonical Ubuntu 24.04 Minimal aarch64，大阪区专属 OCID
+  SUBNET_ID: "ocid1.subnet.oc1.ap-osaka-1.aaaaaaaaizhuffnji7uz5yte37pj7ary72lyc774bhk27mie2qyvsxmu674a"            # vcn-20260621-1905 的公网子网 OCID（大阪）
+  AD_NAME: "jwoj:AP-OSAKA-1-AD-1"                # 大阪 AD 确切名称（租户专属，控制台复制）
+  OCI_CLI_REGION: "ap-osaka-1"
   OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
   OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
   OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
@@ -30,28 +33,42 @@ jobs:
       - name: Add OCI CLI to path
         run: echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: Setup OCI CLI and Try to Create VM
-        id: create_vm
-        # This forces the job to succeed so the cache will save.
-        continue-on-error: true 
+      - name: Setup OCI CLI config
         run: |
-          set -o pipefail
-
-          pip install oci-cli
+          pip install --quiet oci-cli
 
           mkdir -p ~/.oci
-          echo "${{ secrets.OCI_CLI_KEY }}" > ~/.oci/oci_api_key.pem
+          printf '%s' "${{ secrets.OCI_CLI_KEY }}" > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/oci_api_key.pem
 
-          echo "[DEFAULT]" > ~/.oci/config
-          echo "user=${{ secrets.OCI_CLI_USER }}" >> ~/.oci/config
-          echo "tenancy=${{ secrets.OCI_CLI_TENANCY }}" >> ~/.oci/config
-          echo "fingerprint=${{ secrets.OCI_CLI_FINGERPRINT }}" >> ~/.oci/config
-          echo "key_file=~/.oci/oci_api_key.pem" >> ~/.oci/config
-          echo "region=${{ env.OCI_CLI_REGION }}" >> ~/.oci/config
-          echo "${{ secrets.SSH_PUBLIC_KEY }}" > /home/runner/my_ssh_key.pub
-
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=${{ secrets.OCI_CLI_USER }}
+          tenancy=${{ secrets.OCI_CLI_TENANCY }}
+          fingerprint=${{ secrets.OCI_CLI_FINGERPRINT }}
+          key_file=$HOME/.oci/oci_api_key.pem
+          region=${{ env.OCI_CLI_REGION }}
+          EOF
           chmod 600 ~/.oci/config
+
+          printf '%s' "${{ secrets.SSH_PUBLIC_KEY }}" > $HOME/my_ssh_key.pub
+
+      - name: Check existing A1 instances
+        id: check
+        run: |
+          # 幂等保护：已有 running/provisioning/starting 的 A1 就跳过，避免重复创建
+          COUNT=$(oci compute instance list --compartment-id "$COMPARTMENT_ID" --all 2>/dev/null \
+            | jq '[.data[] | select(.shape=="VM.Standard.A1.Flex" and (."lifecycle-state"=="RUNNING" or ."lifecycle-state"=="PROVISIONING" or ."lifecycle-state"=="STARTING"))] | length')
+          echo "count=${COUNT:-0}" >> $GITHUB_OUTPUT
+          echo "Existing A1 instances (active): ${COUNT:-0}"
+
+      - name: Try to create A1 VM
+        id: create_vm
+        if: steps.check.outputs.count == '0'
+        # This forces the job to succeed so the cache will save.
+        continue-on-error: true
+        run: |
+          set -o pipefail
 
           # Run the command, capture ALL output, and use '|| true' to prevent the script from exiting early.
           OCI_OUTPUT=$(oci compute instance launch \
@@ -61,47 +78,28 @@ jobs:
             --shape-config '{"ocpus":2,"memoryInGBs":12}' \
             --subnet-id "$SUBNET_ID" \
             --image-id "$IMAGE_ID" \
-            --ssh-authorized-keys-file "/home/runner/my_ssh_key.pub" \
+            --ssh-authorized-keys-file "$HOME/my_ssh_key.pub" \
             --assign-public-ip true \
-            --display-name "coolify-vm" \
-            --boot-volume-size-in-gbs 200 2>&1 || true)
+            --display-name "trojan-osaka-a1" \
+            --boot-volume-size-in-gbs 50 2>&1 || true)
 
           # Store the log as a GitHub step output
           echo "log_data<<EOF" >> $GITHUB_OUTPUT
           echo "$OCI_OUTPUT" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-          # Check the log content for an error string.
+          # Check the log content for the provisioning state.
           if echo "$OCI_OUTPUT" | grep -q '"lifecycle-state": "PROVISIONING"'; then
             echo "Success! 'PROVISIONING' state found in output."
             exit 0
           else
-            echo "Error: Success string not found in OCI output. Failing the step."
+            echo "Launch failed (most likely out of host capacity). Will retry next run."
             exit 1
           fi
 
-      - name: Send Discord Notification
-        if: always()
-        uses: sarisia/actions-status-discord@v1.15.4
-        with:
-          webhook: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          ack_no_webhook: true   # 如果 webhook 为空则不报错，只跳过发送
-          title: "OCI VM Status: ${{ steps.create_vm.outcome }}"
-          status: ${{ steps.create_vm.outcome }}
-          color: ${{ steps.create_vm.outcome == 'success' && '0x28a745' || '0xdc3545' }}
-          description: |
-            Attempt to create A1.Flex VM.
-            **Status:** `${{ steps.create_vm.outcome }}`
-
-            **Log Output:**
-            ```json
-            ${{ steps.create_vm.outputs.log_data }}
-            ```
-            
       - name: 抢到OCI实例发送邮件通知
-        # 关键判断：只有创建成功才运行本步骤，failure直接跳过
+        # 关键判断：只有创建成功才运行本步骤
         if: steps.create_vm.outcome == 'success'
-        # if: always() 
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
@@ -109,10 +107,11 @@ jobs:
           secure: true
           username: ${{ secrets.MAIL_SENDER }}
           password: ${{ secrets.MAIL_PWD }}
-          from: ${{ secrets.MAIL_SENDER }}   # 新增，通常和 username 相同
+          from: ${{ secrets.MAIL_SENDER }}
           to: ${{ secrets.MAIL_RECEIVER }}
-          subject: 【${{ steps.create_vm.outcome }}】A1.Flex ARM主机 - OCI通知
+          subject: 【成功】A1.Flex ARM主机 - OCI大阪已抢到
           body: |
-            GitHub定时创建Oracle Cloud实例 - ${{ steps.create_vm.outcome }}！            
+            GitHub Actions 已在大阪区成功创建 A1.Flex 实例（trojan-osaka-a1, 2 OCPU / 12 GB）！
+            幂等检查会自动跳过后续创建；也可去仓库 Actions 页面手动 Disable 该 workflow。
             完整OCI返回日志：
             ${{ steps.create_vm.outputs.log_data }}
