@@ -6,7 +6,8 @@ name: Try to Create OCI VM
 # 报错；2核12G 无容量时自动降级试 1核6G。
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "1,6,11,16,21,26,31,36,41,46,51,56 * * * *"
+      timezone: Asia/Shanghai
   # Allows you to manually run this workflow from the Actions tab
   workflow_dispatch:
 env:
