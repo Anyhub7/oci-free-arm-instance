@@ -125,4 +125,27 @@ jobs:
           username: ${{ secrets.MAIL_SENDER }}
           password: ${{ secrets.MAIL_PWD }}
           from: ${{ secrets.MAIL_SENDER }}
-          to: ${{ secrets.MAIL_RECEI
+          to: ${{ secrets.MAIL_RECEIVER }}
+          subject: 【成功】A1.Flex ARM主机 - OCI大阪已抢到
+          body: |
+            GitHub Actions 已在大阪区成功创建 A1.Flex 实例（trojan-osaka-a1，${{ steps.create_vm.outputs.shape_used }}）！
+            幂等检查会自动跳过后续创建；也可去仓库 Actions 页面手动 Disable 该 workflow。
+            完整OCI返回日志：
+            ${{ steps.create_vm.outputs.log_data }}
+
+      - name: 异常失败发邮件通知
+        # 非容量问题的失败才发邮件告警；单纯没容量不打扰
+        if: steps.create_vm.outcome == 'failure' && !contains(steps.create_vm.outputs.log_data, 'capacity')
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_SENDER }}
+          password: ${{ secrets.MAIL_PWD }}
+          from: ${{ secrets.MAIL_SENDER }}
+          to: ${{ secrets.MAIL_RECEIVER }}
+          subject: 【异常】OCI大阪建机失败（非容量问题，请检查）
+          body: |
+            GitHub Actions 在大阪区创建 A1.Flex 实例失败，且报错不是容量问题，请检查配置：
+            ${{ steps.create_vm.outputs.log_data }}
