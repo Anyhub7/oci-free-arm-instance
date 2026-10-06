@@ -3,11 +3,13 @@ name: Try to Create OCI VM
 # 修复记录（2026-10-06）：原脚本 region 全写 ap-singapore-1，但账号 home region
 # 是 ap-osaka-1，免费机只能建在 home region；启动卷 200GB 会超 200GB 免费总额，
 # 改为 50GB；加了幂等检查（已有 A1 就跳过）；通知只走邮件；失败时打印 OCI 原始
-# 报错；2核12G 无容量时自动降级试 1核6G。
+# 报错；2核12G 无容量时自动降级试 1核6G；v3: 两次尝试间隔180秒防429，cron改每15分钟（timezone非法已删）。
 on:
   schedule:
-    - cron: "1,6,11,16,21,26,31,36,41,46,51,56 * * * *"
-      timezone: Asia/Shanghai
+    # 每15分钟跑一次，固定在 :07/:22/:37/:52（UTC分钟数=CST分钟数，因UTC+8为整小时偏移）。
+    # 注：timezone 不是 schedule 的合法 key（会导致触发器被忽略），已删除。
+    # 15分钟是上限：两次 launch POST 间隔过短会触发 OCI 429 限流，且单次 run 耗时约6分钟。
+    - cron: "7,22,37,52 * * * *"
   # Allows you to manually run this workflow from the Actions tab
   workflow_dispatch:
   
@@ -94,7 +96,13 @@ jobs:
           SHAPE_USED=""
           OCI_OUTPUT=""
           # 先试 2核12G，无容量则降级试 1核6G（trojan 备胎机够用）
+          FIRST_TRY=1
           for CFG in '{"ocpus":2,"memoryInGBs":12}' '{"ocpus":1,"memoryInGBs":6}'; do
+            if [ "$FIRST_TRY" -eq 0 ]; then
+              echo "Waiting 180s before next launch attempt (avoid OCI 429 TooManyRequests)..."
+              sleep 180
+            fi
+            FIRST_TRY=0
             echo "Trying shape-config: $CFG"
             OCI_OUTPUT=$(launch "$CFG")
             if echo "$OCI_OUTPUT" | grep -q '"lifecycle-state": "PROVISIONING"'; then
