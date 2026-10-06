@@ -3,7 +3,7 @@ name: Try to Create OCI VM
 # 修复记录（2026-10-06）：原脚本 region 全写 ap-singapore-1，但账号 home region
 # 是 ap-osaka-1，免费机只能建在 home region；启动卷 200GB 会超 200GB 免费总额，
 # 改为 50GB；加了幂等检查（已有 A1 就跳过）；通知只走邮件；失败时打印 OCI 原始
-# 报错；2核12G 无容量时自动降级试 1核6G；v3: 两次尝试间隔180秒防429，cron改每15分钟（timezone非法已删）。
+# 报错；v4: 每次 run 只发一次 launch POST（单次 run 内两次 POST 必触发 429），用 run_number 奇偶轮换 2核12G/1核6G；429 视为 transient 不告警。
 on:
   schedule:
     # 每15分钟跑一次，固定在 :07/:22/:37/:52（UTC分钟数=CST分钟数，因UTC+8为整小时偏移）。
@@ -95,25 +95,23 @@ jobs:
 
           SHAPE_USED=""
           OCI_OUTPUT=""
-          # 先试 2核12G，无容量则降级试 1核6G（trojan 备胎机够用）
-          FIRST_TRY=1
-          for CFG in '{"ocpus":2,"memoryInGBs":12}' '{"ocpus":1,"memoryInGBs":6}'; do
-            if [ "$FIRST_TRY" -eq 0 ]; then
-              echo "Waiting 180s before next launch attempt (avoid OCI 429 TooManyRequests)..."
-              sleep 180
-            fi
-            FIRST_TRY=0
-            echo "Trying shape-config: $CFG"
-            OCI_OUTPUT=$(launch "$CFG")
-            if echo "$OCI_OUTPUT" | grep -q '"lifecycle-state": "PROVISIONING"'; then
-              echo "Success! VM is PROVISIONING with $CFG."
-              SHAPE_USED="$CFG"
-              break
-            fi
-            echo "----- attempt raw output -----"
-            echo "$OCI_OUTPUT"
-            echo "----------------------------"
-          done
+          # v4 教训：单次 run 内发两次 launch POST（即使间隔 180 秒）必触发 OCI 429。
+          # v1 三天单 POST/次从未 429。因此每次 run 只发一次 POST，用 run_number 奇偶
+          # 轮换规格——奇数次试 2核12G，偶数次试 1核6G，两种容量窗口都不错过。
+          if [ $((GITHUB_RUN_NUMBER % 2)) -eq 1 ]; then
+            CFG='{"ocpus":2,"memoryInGBs":12}'
+          else
+            CFG='{"ocpus":1,"memoryInGBs":6}'
+          fi
+          echo "Trying shape-config: $CFG (run #$GITHUB_RUN_NUMBER)"
+          OCI_OUTPUT=$(launch "$CFG")
+          if echo "$OCI_OUTPUT" | grep -q '"lifecycle-state": "PROVISIONING"'; then
+            echo "Success! VM is PROVISIONING with $CFG."
+            SHAPE_USED="$CFG"
+          fi
+          echo "----- attempt raw output -----"
+          echo "$OCI_OUTPUT"
+          echo "----------------------------"
 
           # Store the log as a GitHub step output
           echo "log_data<<EOF" >> $GITHUB_OUTPUT
@@ -148,8 +146,9 @@ jobs:
             ${{ steps.create_vm.outputs.log_data }}
 
       - name: 异常失败发邮件通知
-        # 非容量问题的失败才发邮件告警；单纯没容量不打扰
-        if: steps.create_vm.outcome == 'failure' && !contains(steps.create_vm.outputs.log_data, 'capacity')
+        # 容量不足和 429 限流都是"等下一轮就行"的 transient 问题，不打扰；
+        # 只有其他失败（认证、参数、权限等需人工介入的）才告警。
+        if: steps.create_vm.outcome == 'failure' && !contains(steps.create_vm.outputs.log_data, 'capacity') && !contains(steps.create_vm.outputs.log_data, 'TooManyRequests')
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
