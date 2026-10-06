@@ -2,7 +2,8 @@ name: Try to Create OCI VM
 # 每 5 分钟抢一次大阪区 A1.Flex（Always Free 额度）。
 # 修复记录（2026-10-06）：原脚本 region 全写 ap-singapore-1，但账号 home region
 # 是 ap-osaka-1，免费机只能建在 home region；启动卷 200GB 会超 200GB 免费总额，
-# 改为 50GB；加了幂等检查（已有 A1 就跳过）；通知只走邮件（Discord 已移除）。
+# 改为 50GB；加了幂等检查（已有 A1 就跳过）；通知只走邮件；失败时打印 OCI 原始
+# 报错；2核12G 无容量时自动降级试 1核6G。
 on:
   schedule:
     - cron: "*/5 * * * *"
@@ -70,30 +71,46 @@ jobs:
         run: |
           set -o pipefail
 
-          # Run the command, capture ALL output, and use '|| true' to prevent the script from exiting early.
-          OCI_OUTPUT=$(oci compute instance launch \
-            --compartment-id "$COMPARTMENT_ID" \
-            --availability-domain "$AD_NAME" \
-            --shape "VM.Standard.A1.Flex" \
-            --shape-config '{"ocpus":2,"memoryInGBs":12}' \
-            --subnet-id "$SUBNET_ID" \
-            --image-id "$IMAGE_ID" \
-            --ssh-authorized-keys-file "$HOME/my_ssh_key.pub" \
-            --assign-public-ip true \
-            --display-name "trojan-osaka-a1" \
-            --boot-volume-size-in-gbs 50 2>&1 || true)
+          launch() {  # $1 = shape-config JSON
+            oci compute instance launch \
+              --compartment-id "$COMPARTMENT_ID" \
+              --availability-domain "$AD_NAME" \
+              --shape "VM.Standard.A1.Flex" \
+              --shape-config "$1" \
+              --subnet-id "$SUBNET_ID" \
+              --image-id "$IMAGE_ID" \
+              --ssh-authorized-keys-file "$HOME/my_ssh_key.pub" \
+              --assign-public-ip true \
+              --display-name "trojan-osaka-a1" \
+              --boot-volume-size-in-gbs 50 2>&1 || true
+          }
+
+          SHAPE_USED=""
+          OCI_OUTPUT=""
+          # 先试 2核12G，无容量则降级试 1核6G（trojan 备胎机够用）
+          for CFG in '{"ocpus":2,"memoryInGBs":12}' '{"ocpus":1,"memoryInGBs":6}'; do
+            echo "Trying shape-config: $CFG"
+            OCI_OUTPUT=$(launch "$CFG")
+            if echo "$OCI_OUTPUT" | grep -q '"lifecycle-state": "PROVISIONING"'; then
+              echo "Success! VM is PROVISIONING with $CFG."
+              SHAPE_USED="$CFG"
+              break
+            fi
+            echo "----- attempt raw output -----"
+            echo "$OCI_OUTPUT"
+            echo "----------------------------"
+          done
 
           # Store the log as a GitHub step output
           echo "log_data<<EOF" >> $GITHUB_OUTPUT
           echo "$OCI_OUTPUT" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
+          echo "shape_used=$SHAPE_USED" >> $GITHUB_OUTPUT
 
-          # Check the log content for the provisioning state.
-          if echo "$OCI_OUTPUT" | grep -q '"lifecycle-state": "PROVISIONING"'; then
-            echo "Success! 'PROVISIONING' state found in output."
+          if [ -n "$SHAPE_USED" ]; then
             exit 0
           else
-            echo "Launch failed (most likely out of host capacity). Will retry next run."
+            echo "All attempts failed (most likely out of host capacity). Will retry next run."
             exit 1
           fi
 
@@ -108,10 +125,4 @@ jobs:
           username: ${{ secrets.MAIL_SENDER }}
           password: ${{ secrets.MAIL_PWD }}
           from: ${{ secrets.MAIL_SENDER }}
-          to: ${{ secrets.MAIL_RECEIVER }}
-          subject: 【成功】A1.Flex ARM主机 - OCI大阪已抢到
-          body: |
-            GitHub Actions 已在大阪区成功创建 A1.Flex 实例（trojan-osaka-a1, 2 OCPU / 12 GB）！
-            幂等检查会自动跳过后续创建；也可去仓库 Actions 页面手动 Disable 该 workflow。
-            完整OCI返回日志：
-            ${{ steps.create_vm.outputs.log_data }}
+          to: ${{ secrets.MAIL_RECEI
